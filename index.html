@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Crafty">
+<title>Crafty+ Battery</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --text:#f2f4f8; --muted:#8b93a3; --accent:#3ddc97; --warn:#f5b942; --low:#ff5d5d; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         display:flex; flex-direction:column; align-items:center; padding:32px 20px; }
+  h1 { font-size:18px; font-weight:600; color:var(--muted); margin:0 0 24px; letter-spacing:.04em; text-transform:uppercase; }
+  .battery { width:220px; height:110px; border:6px solid var(--text); border-radius:18px; position:relative; padding:8px; }
+  .battery::after { content:""; position:absolute; right:-20px; top:30px; width:12px; height:38px; background:var(--text); border-radius:0 6px 6px 0; }
+  .fill { height:100%; width:0%; border-radius:8px; background:var(--accent); transition:width .6s, background .6s; }
+  .pct { font-size:72px; font-weight:700; margin:24px 0 4px; font-variant-numeric:tabular-nums; }
+  .status { color:var(--muted); font-size:15px; min-height:20px; margin-bottom:24px; text-align:center; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; width:100%; max-width:360px; margin-bottom:28px; }
+  .card { background:var(--card); border-radius:14px; padding:14px 16px; }
+  .card .label { color:var(--muted); font-size:13px; margin-bottom:6px; }
+  .card .val { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .card .sub { color:var(--muted); font-size:13px; }
+  button { background:var(--accent); color:#0b0d10; border:0; border-radius:14px; padding:16px 28px;
+           font-size:17px; font-weight:600; width:100%; max-width:360px; }
+  button.secondary { background:var(--card); color:var(--text); margin-top:10px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+  <h1>Crafty+</h1>
+  <div class="battery"><div class="fill" id="fill"></div></div>
+  <div class="pct" id="pct">--%</div>
+  <div class="status" id="status">Not connected</div>
+
+  <div class="grid">
+    <div class="card"><div class="label">Current temp</div><div class="val" id="cur">--</div><div class="sub" id="curC"></div></div>
+    <div class="card"><div class="label">Target temp</div><div class="val" id="tgt">--</div><div class="sub" id="tgtC"></div></div>
+  </div>
+
+  <button id="connect">Connect</button>
+  <button id="disconnect" class="secondary hidden">Disconnect</button>
+
+<script>
+  // Storz & Bickel Crafty+ GATT layout (found with nRF Connect).
+  const uuid = n => `000000${n}-4c45-4b43-4942-265a524f5453`;
+  const SERVICE = uuid('01');
+  const CHARS = { current: uuid('11'), target: uuid('21'), battery: uuid('41') };
+  // Values are 16-bit little-endian. Temps are tenths of °C; battery is plain %.
+
+  const $ = id => document.getElementById(id);
+  let device = null, pollTimer = null, chars = {};
+
+  const toF = c => Math.round(c * 9 / 5 + 32);
+  const u16 = dv => dv.getUint16(0, true);
+
+  function showBattery(p) {
+    $('pct').textContent = p + '%';
+    $('fill').style.width = Math.max(0, Math.min(100, p)) + '%';
+    $('fill').style.background = p <= 15 ? 'var(--low)' : p <= 35 ? 'var(--warn)' : 'var(--accent)';
+  }
+  function showTemp(id, raw) {
+    const c = raw / 10;
+    $(id).textContent = toF(c) + '°F';
+    $(id + 'C').textContent = c.toFixed(1) + '°C';
+  }
+  function handle(key, dv) {
+    const v = u16(dv);
+    if (key === 'battery') showBattery(v);
+    else showTemp(key === 'current' ? 'cur' : 'tgt', v);
+  }
+
+  async function readAll() {
+    for (const [key, ch] of Object.entries(chars)) {
+      try { handle(key, await ch.readValue()); } catch (e) { /* skip one bad read */ }
+    }
+    $('status').textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  }
+
+  async function connect() {
+    if (!navigator.bluetooth) {
+      $('status').textContent = 'This browser has no Web Bluetooth. On iPhone, open this page in Bluefy.';
+      return;
+    }
+    try {
+      $('status').textContent = 'Choose your Crafty…';
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'STORZ' }],
+        optionalServices: [SERVICE]
+      });
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      $('status').textContent = 'Connecting…';
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE);
+      chars = {};
+      for (const [key, id] of Object.entries(CHARS)) {
+        try { chars[key] = await service.getCharacteristic(id); } catch (e) {}
+      }
+      // Live updates where supported, plus a 30s poll as backup.
+      for (const [key, ch] of Object.entries(chars)) {
+        if (ch.properties.notify) {
+          try {
+            await ch.startNotifications();
+            ch.addEventListener('characteristicvaluechanged', e => handle(key, e.target.value));
+          } catch (e) {}
+        }
+      }
+      await readAll();
+      pollTimer = setInterval(readAll, 30000);
+      $('connect').classList.add('hidden');
+      $('disconnect').classList.remove('hidden');
+    } catch (e) {
+      $('status').textContent = e.name === 'NotFoundError' ? 'No device chosen' : 'Error: ' + e.message;
+    }
+  }
+
+  function onDisconnected() {
+    clearInterval(pollTimer);
+    $('status').textContent = 'Disconnected';
+    $('connect').classList.remove('hidden');
+    $('connect').textContent = 'Reconnect';
+    $('disconnect').classList.add('hidden');
+  }
+
+  $('connect').addEventListener('click', connect);
+  $('disconnect').addEventListener('click', () => device && device.gatt.connected && device.gatt.disconnect());
+</script>
+</body>
+</html>
