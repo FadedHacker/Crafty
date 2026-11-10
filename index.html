@@ -41,6 +41,7 @@
   </div>
 
   <button id="connect">Connect</button>
+  <button id="showall" class="secondary">Show all Bluetooth devices</button>
   <button id="disconnect" class="secondary hidden">Disconnect</button>
 
 <script>
@@ -79,17 +80,26 @@
     $('status').textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
   }
 
-  async function connect() {
+  async function connect(showAll) {
     if (!navigator.bluetooth) {
       $('status').textContent = 'This browser has no Web Bluetooth. On iPhone, open this page in Bluefy.';
       return;
     }
     try {
       $('status').textContent = 'Choose your Crafty…';
-      device = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'STORZ' }],
-        optionalServices: [SERVICE]
-      });
+      const options = showAll === true
+        ? { acceptAllDevices: true, optionalServices: [SERVICE] }
+        : {
+            filters: [
+              { services: [SERVICE] },
+              { namePrefix: 'STORZ' },
+              { namePrefix: 'Storz' },
+              { namePrefix: 'CRAFTY' },
+              { namePrefix: 'Crafty' }
+            ],
+            optionalServices: [SERVICE]
+          };
+      device = await navigator.bluetooth.requestDevice(options);
       device.addEventListener('gattserverdisconnected', onDisconnected);
       $('status').textContent = 'Connecting…';
       const server = await device.gatt.connect();
@@ -110,6 +120,7 @@
       await readAll();
       pollTimer = setInterval(readAll, 30000);
       $('connect').classList.add('hidden');
+      $('showall').classList.add('hidden');
       $('disconnect').classList.remove('hidden');
     } catch (e) {
       $('status').textContent = e.name === 'NotFoundError' ? 'No device chosen' : 'Error: ' + e.message;
@@ -120,11 +131,13 @@
     clearInterval(pollTimer);
     $('status').textContent = 'Disconnected';
     $('connect').classList.remove('hidden');
+    $('showall').classList.remove('hidden');
     $('connect').textContent = 'Reconnect';
     $('disconnect').classList.add('hidden');
   }
 
-  $('connect').addEventListener('click', connect);
+  $('connect').addEventListener('click', () => connect(false));
+  $('showall').addEventListener('click', () => connect(true));
   $('disconnect').addEventListener('click', () => device && device.gatt.connected && device.gatt.disconnect());
 </script>
 </body>
