@@ -36,6 +36,12 @@
   <div class="status" id="status">Not connected</div>
 
   <div class="grid">
+    <div class="card" id="sessionsCard" style="grid-column: 1 / -1;"><div class="label">Sessions (~20% each)</div><div class="val" id="sessions">--</div><div class="sub" id="sessionsSub"></div></div>
+    <div class="card hidden" id="chargeCard" style="grid-column: 1 / -1;">
+      <div class="val" id="chargeTitle" style="color:var(--accent);font-size:20px;"></div>
+      <div class="sub" id="chargeNext" style="font-size:15px;margin-top:6px;color:var(--text);"></div>
+      <div class="sub" id="chargeFull" style="font-size:15px;margin-top:2px;"></div>
+    </div>
     <div class="card"><div class="label">Current temp</div><div class="val" id="cur">--</div><div class="sub" id="curC"></div></div>
     <div class="card"><div class="label">Target temp</div><div class="val" id="tgt">--</div><div class="sub" id="tgtC"></div></div>
   </div>
@@ -57,11 +63,92 @@
   const toF = c => Math.round(c * 9 / 5 + 32);
   const u16 = dv => dv.getUint16(0, true);
 
+  // ---- Sessions + charging estimate ----
+  const SESSION_PCT = 20;          // one session uses about 20%
+  const HIST_KEY = 'craftyBatteryHistory';
+  let hist = [];                    // [{t: ms, p: percent}] one entry per level change
+  try { hist = JSON.parse(localStorage.getItem(HIST_KEY)) || []; } catch (e) { hist = []; }
+  let lastPct = null;
+
+  function fmtDur(ms) {
+    const m = Math.max(1, Math.round(ms / 60000));
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60), r = m % 60;
+    return r ? `${h} h ${r} min` : `${h} h`;
+  }
+
+  function recordBattery(p) {
+    const now = Date.now();
+    const last = hist[hist.length - 1];
+    if (!last || last.p !== p) hist.push({ t: now, p });
+    hist = hist.filter(h => now - h.t < 6 * 3600000).slice(-200);
+    try { localStorage.setItem(HIST_KEY, JSON.stringify(hist)); } catch (e) {}
+  }
+
+  // Charging = the battery has been going up recently. Rate is measured from the rising run.
+  function chargingInfo() {
+    if (hist.length < 2) return null;
+    let i = hist.length - 1;
+    while (i > 0 && hist[i].p > hist[i - 1].p) i--;
+    const start = hist[i], end = hist[hist.length - 1];
+    if (end.p <= start.p) return null;                       // not rising
+    if (Date.now() - end.t > 15 * 60000) return null;        // no rise in 15 min
+    const gained = end.p - start.p;
+    const rate = gained >= 2 ? gained / (end.t - start.t) : null;  // % per ms
+    return { rate, end };
+  }
+
+  function updateSessions(p) {
+    const n = Math.floor(p / SESSION_PCT);
+    const card = $('sessionsCard');
+    if (p < SESSION_PCT) {
+      $('sessions').textContent = '⚠️ Not enough for a session';
+      $('sessions').style.color = 'var(--low)';
+      $('sessions').style.fontSize = '20px';
+      $('sessionsSub').textContent = `Below ${SESSION_PCT}%, so charge before your next session`;
+      card.style.outline = '2px solid var(--low)';
+    } else {
+      $('sessions').textContent = `${n} ${n === 1 ? 'session' : 'sessions'} left`;
+      $('sessions').style.color = '';
+      $('sessions').style.fontSize = '';
+      $('sessionsSub').textContent = '';
+      card.style.outline = '';
+    }
+  }
+
+  function updateCharging(p) {
+    const info = chargingInfo();
+    const box = $('chargeCard');
+    if (p >= 100 && info) { box.classList.remove('hidden'); $('chargeTitle').textContent = '⚡ Fully charged'; $('chargeNext').textContent = ''; $('chargeFull').textContent = ''; return; }
+    if (!info) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    $('chargeTitle').textContent = '⚡ Charging';
+    if (!info.rate) {
+      $('chargeNext').textContent = 'Measuring charge speed…';
+      $('chargeFull').textContent = 'Estimates appear after about 2% gain';
+      return;
+    }
+    const sinceLast = Date.now() - info.end.t;
+    const eta = target => Math.max(0, (target - p) / info.rate - sinceLast);
+    const nextTarget = Math.min(100, (Math.floor(p / SESSION_PCT) + 1) * SESSION_PCT);
+    const nextN = Math.floor(nextTarget / SESSION_PCT);
+    $('chargeNext').textContent = p < 100 && nextTarget < 100
+      ? `${nextN} sessions (${nextTarget}%) in ~${fmtDur(eta(nextTarget))}`
+      : '';
+    $('chargeFull').textContent = `Full (100%) in ~${fmtDur(eta(100))}`;
+  }
+
   function showBattery(p) {
     $('pct').textContent = p + '%';
     $('fill').style.width = Math.max(0, Math.min(100, p)) + '%';
     $('fill').style.background = p <= 15 ? 'var(--low)' : p <= 35 ? 'var(--warn)' : 'var(--accent)';
+    lastPct = p;
+    recordBattery(p);
+    updateSessions(p);
+    updateCharging(p);
   }
+  // Keep the countdown fresh between battery changes.
+  setInterval(() => { if (lastPct !== null) updateCharging(lastPct); }, 30000);
   function showTemp(id, raw) {
     const c = raw / 10;
     $(id).textContent = toF(c) + '°F';
