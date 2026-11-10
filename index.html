@@ -177,13 +177,7 @@
       const options = showAll === true
         ? { acceptAllDevices: true, optionalServices: [SERVICE] }
         : {
-            filters: [
-              { services: [SERVICE] },
-              { namePrefix: 'STORZ' },
-              { namePrefix: 'Storz' },
-              { namePrefix: 'CRAFTY' },
-              { namePrefix: 'Crafty' }
-            ],
+            filters: [{ namePrefix: 'STORZ' }],
             optionalServices: [SERVICE]
           };
       device = await navigator.bluetooth.requestDevice(options);
